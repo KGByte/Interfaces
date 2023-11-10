@@ -12,7 +12,14 @@ class TivaSPI {
   enum class SPI_Internal_State : uint8_t {
     kIdle = 0,
     kWriting,
-    kTransferring
+    kTransferring,
+  };
+
+  enum class SPI_Transferring_Stage : uint8_t {
+    kIdle = 0,
+    kWriting,
+    kReading,
+    kFinishing
   };
 
   struct SPI_Runtime_Data {
@@ -20,6 +27,7 @@ class TivaSPI {
     uint8_t write_index;
     uint8_t num_read_bytes;
     uint8_t num_write_bytes;
+    uint16_t num_total_bytes;
   };
 
   void Initialize();
@@ -30,6 +38,9 @@ class TivaSPI {
   void TransmitCallback();
 
   bool StartNonBlockingWrite(uint8_t *data, uint8_t num_bytes);
+  bool StartNonBlockingTransfer(uint8_t *data_out, uint8_t *data_in,
+                                uint8_t num_total_bytes,
+                                uint8_t num_read_bytes);
 
  private:
   /* Base address of SPI peripheral */
@@ -45,6 +56,7 @@ class TivaSPI {
 
   SPI_Runtime_Data spi_control{};
   SPI_Internal_State state{SPI_Internal_State::kIdle};
+  SPI_Transferring_Stage stage{SPI_Transferring_Stage::kIdle};
 };
 
 #endif

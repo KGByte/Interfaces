@@ -65,6 +65,8 @@ void TivaSPI::BlockingTransfer(uint32_t *data_out, uint32_t *data_in,
 
   ClearReceiveBuffer(&data_in[0]);
 
+  SSIIntEnable(SSI0_BASE, SSI_TXFF);
+
   AssertCS();
   while (bytes_processed < num_bytes) {
     // put data into the Tx FIFO
@@ -120,8 +122,102 @@ bool TivaSPI::StartNonBlockingWrite(uint8_t *data, uint8_t num_bytes) {
   }
 }
 
+bool TivaSPI::StartNonBlockingTransfer(uint8_t *data_out, uint8_t *data_in,
+                                       uint8_t num_write_bytes,
+                                       uint8_t num_read_bytes) {
+  if (state == SPI_Internal_State::kIdle) {
+    state = SPI_Internal_State::kTransferring;
+
+    spi_control.write_index = 0;
+    spi_control.read_index = 0;
+    spi_control.num_read_bytes = num_read_bytes;
+    spi_control.num_write_bytes = num_write_bytes;
+    spi_control.num_total_bytes = num_read_bytes + num_write_bytes;
+    std::memcpy(tx_data_buffer, data_out, spi_control.num_total_bytes);
+
+    /* If only writing to 1 register during the transfer, go to reading step
+     * next. Else, signal that more writing bytes (not dummy data) are going
+     * out.*/
+    if (num_write_bytes == 1) {
+      stage = SPI_Transferring_Stage::kReading;
+    } else {
+      stage = SPI_Transferring_Stage::kWriting;
+    }
+
+    AssertCS();
+
+    SSIDataPutNonBlocking(SSI0_BASE, tx_data_buffer[spi_control.write_index++]);
+
+    SSIIntEnable(SSI0_BASE, SSI_TXFF);
+
+    return true;
+  } else {
+    return false;
+  }
+}
+
 void TivaSPI::ReceiveCallback() {}
 void TivaSPI::TransmitCallback() {
+  switch (state) {
+    case SPI_Internal_State::kIdle: {
+      break;
+    }
+
+    case SPI_Internal_State::kWriting: {
+      state = SPI_Internal_State::kIdle;
+
+      DeAssertCS();
+      break;
+    }
+
+    case SPI_Internal_State::kTransferring: {
+      switch (stage) {
+        case SPI_Transferring_Stage::kWriting: {
+          if (spi_control.write_index == spi_control.num_write_bytes - 1) {
+            /* finished writing - move to reading */
+            stage = SPI_Transferring_Stage::kReading;
+          }
+          SSIDataPutNonBlocking(kBaseAddress,
+                                tx_data_buffer[spi_control.write_index++]);
+
+          break;
+        }
+
+        case SPI_Transferring_Stage::kReading: {
+          if (spi_control.num_read_bytes - 1 == spi_control.read_index) {
+            SSIDataPutNonBlocking(kBaseAddress,
+                                  tx_data_buffer[spi_control.write_index]);
+            SSIDataGetNonBlocking(
+                kBaseAddress,
+                (uint32_t *)&rx_data_buffer[spi_control.read_index]);
+            stage = SPI_Transferring_Stage::kFinishing;
+          } else {
+            /* Dummy bytes into FIFO */
+            SSIDataPutNonBlocking(kBaseAddress,
+                                  tx_data_buffer[spi_control.write_index++]);
+            /* Get data from receive FIFO and store into local array */
+            SSIDataGetNonBlocking(
+                kBaseAddress,
+                (uint32_t *)&rx_data_buffer[spi_control.read_index++]);
+          }
+          break;
+        }
+
+        case SPI_Transferring_Stage::kFinishing: {
+          DeAssertCS();
+          stage = SPI_Transferring_Stage::kIdle;
+          state = SPI_Internal_State::kIdle;
+          break;
+        }
+
+        default:
+          break;
+      }
+    }
+
+    default:
+      break;
+  }
   // SSIDataPutNonBlocking(SSI0_BASE,
   // tx_data_buffer[spi_control.write_index++]);
   // spi_control.write_index++;
@@ -131,9 +227,9 @@ void TivaSPI::TransmitCallback() {
   // } else {
   //   return;
   // }
-  state = SPI_Internal_State::kIdle;
-  // SSIIntDisable(SSI0_BASE, SSI_TXFF);
-  DeAssertCS();
+  // state = SPI_Internal_State::kIdle;
+  // // SSIIntDisable(SSI0_BASE, SSI_TXFF);
+  // DeAssertCS();
 
   // if (spi_control.write_index == spi_control.num_write_bytes - 1) {
   //   SSIIntDisable(SSI0_BASE, SSI_TXFF);
